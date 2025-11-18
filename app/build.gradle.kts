@@ -1,7 +1,19 @@
+import java.util.Properties
+
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+}
+
+
+val localProperties = Properties() // <-- Lebih bersih karena sudah di-import
+val localPropertiesFile = rootProject.file("local.properties")
+
+// 2. Load filenya
+if (localPropertiesFile.exists()) {
+    localProperties.load(localPropertiesFile.inputStream())
 }
 
 android {
@@ -18,6 +30,19 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // 3. Ambil nilai & jadikan BuildConfig
+        // Ini akan membuat variabelnya tersedia di kode Kotlin
+        buildConfigField(
+            "String", // Tipe data
+            "RPC_URL",  // Nama variabel di Kotlin
+            "\"${localProperties.getProperty("RPC_URL", "URL_DEFAULT_JIKA_TIDAK_ADA")}\"" // Ambil nilainya
+        )
+        buildConfigField(
+            "String",
+            "CHAIN_ID",
+            "\"${localProperties.getProperty("CHAIN_ID", "1")}\"" // Ambil nilainya
+        )
     }
 
     buildTypes {
@@ -38,6 +63,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

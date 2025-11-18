@@ -42,8 +42,16 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
+
     // Tambahkan dependensi untuk Reown AppKit (library Ethereum dan WalletConnect)
     implementation(platform("com.reown:android-bom:1.4.11"))  // Pastikan BOM terbaru
     implementation("com.reown:android-core")
     implementation("com.reown:appkit")
+
+
+    implementation("org.web3j:core:4.10.3")
+    // Diperlukan oleh Web3j untuk koneksi HTTP
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Kita akan butuh ini untuk menjalankan kode di background thread
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }

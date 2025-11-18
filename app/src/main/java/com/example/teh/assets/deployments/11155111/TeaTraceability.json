@@ -1,0 +1,9 @@
+{
+  "name": "TeaTraceability",
+  "address": "0xbD80772c5996b2f2a79Bc3C47c933782482040d4",
+  "deployTx": "0xb022f5f2e254a0c42cc7cac7248cf2a2af84248a639efd716290d73039e3bbe1",
+  "startBlock": 9610520,
+  "chainId": 11155111,
+  "abi": "abi/TeaTraceability.json",
+  "explorer": "https://sepolia.etherscan.io/address/0xbD80772c5996b2f2a79Bc3C47c933782482040d4"
+}
