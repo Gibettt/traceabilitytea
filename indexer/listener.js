@@ -7,46 +7,23 @@ import fs from "fs";
 
 const prisma = new PrismaClient();
 
-// --- SAFE FETCHING FOR ALCHEMY ---
-// ethers v6 → gunakan provider.getLogs langsung
-async function safeQueryLogs(contract, eventFragment, start, end, chunk = 2000) {
-    const iface = contract.interface;
-    const topic = iface.getEvent(eventFragment).topicHash;
+// fungsi bantu: normalisasi lotId / newLotId
+function normalizeIndexedString(value) {
+    // kalau sudah string biasa
+    if (typeof value === "string") return value;
 
-    let logs = [];
-    let from = start;
-
-    while (from <= end) {
-        const to = Math.min(from + chunk, end);
-
-        try {
-            const fetched = await contract.runner.getLogs({
-                address: contract.target,
-                topics: [topic],
-                fromBlock: from,
-                toBlock: to
-            });
-
-            logs.push(...fetched);
-            console.log(`✔️ fetched ${eventFragment} blocks ${from} → ${to}`);
-        } catch (err) {
-            console.error(`❌ Error fetching ${eventFragment} from ${from} to ${to}`);
-            console.log("⏳ Retry after 1s...");
-            await new Promise(res => setTimeout(res, 1000));
-            continue;
-        }
-
-        from = to + 1;
+    // ethers v6 Indexed: { hash: "0x...", _isIndexed: true }
+    if (value && typeof value === "object" && "hash" in value) {
+        return value.hash; // pakai hash-nya sebagai ID di DB
     }
 
-    return logs.map(log => contract.interface.parseLog(log));
+    // fallback
+    return String(value);
 }
 
 async function main() {
-    // Provider
     const provider = new JsonRpcProvider(process.env.RPC_URL);
 
-    // Load deployment config
     const config = JSON.parse(
         fs.readFileSync("./deployments/11155111/TeaTrace.json", "utf8")
     );
@@ -55,8 +32,9 @@ async function main() {
 
     const latest = await provider.getBlockNumber();
 
-    console.log("🚀 Indexer berjalan, startBlock:", config.startBlock);
-    console.log("📌 Latest block:", latest);
+    console.log("🚀 Indexer realtime berjalan");
+    console.log("📌 Latest block di RPC:", latest);
+    console.log("❕ Skip catch-up, hanya dengarkan event baru dari sekarang.\n");
 
     const events = [
         "LotCreated",
@@ -67,94 +45,82 @@ async function main() {
         "TransferCancelled"
     ];
 
-    // --- CATCH-UP LOGS ---
-    for (const eventName of events) {
-        console.log("\n⏳ Fetching:", eventName);
-
-        const logs = await safeQueryLogs(
-            contract,
-            eventName,
-            config.startBlock,
-            latest
-        );
-
-        for (const parsed of logs) {
-            await handleEvent(eventName, parsed);
-        }
-    }
-
-    console.log("✔️ Catch-up selesai. Listening real-time...");
-
-    // --- REALTIME LISTEN ---
     for (const eventName of events) {
         contract.on(eventName, async (...args) => {
-            const evt = args[args.length - 1];
-            const parsed = contract.interface.parseLog(evt.log);
-            await handleEvent(eventName, parsed, evt);
+            const evt = args[args.length - 1]; // event object
+
+            try {
+                await handleEvent(eventName, evt, provider);
+            } catch (err) {
+                console.error(`@TODO Error handleEvent untuk ${eventName}:`, err);
+            }
         });
     }
 }
 
-async function handleEvent(name, evt, raw = null) {
-    // evt.args → parameter event
+async function handleEvent(name, evt, provider) {
     const args = evt.args;
 
-    // Ambil block data
-    const blockNumber = raw?.log?.blockNumber ?? evt.log.blockNumber;
-    const txHash = raw?.log?.transactionHash ?? evt.log.transactionHash;
+    // blockNumber dan txHash: coba ambil dari beberapa kemungkinan field
+    const blockNumber = evt.blockNumber ?? evt.log?.blockNumber;
+    const txHash = evt.transactionHash ?? evt.log?.transactionHash;
 
-    const provider = new JsonRpcProvider(process.env.RPC_URL);
     const block = await provider.getBlock(blockNumber);
+    const blockTime = new Date(block.timestamp * 1000);
 
     if (name === "LotCreated") {
+        const lotId = normalizeIndexedString(args.lotId);
+
         await prisma.batch.upsert({
-            where: { id: args.lotId },
+            where: { id: lotId },
             create: {
-                id: args.lotId,
+                id: lotId,
                 owner: args.actor,
                 cid: args.ipfsHash,
                 status: "CREATED",
                 createdTx: txHash,
                 createdBlock: blockNumber,
-                createdAt: new Date(block.timestamp * 1000),
+                createdAt: blockTime,
             },
             update: {}
         });
 
-        console.log("🟢 LotCreated:", args.lotId);
+        console.log("🟢 LotCreated:", lotId);
     }
 
     if (name === "LotProcessed") {
+        const newLotId = normalizeIndexedString(args.newLotId);
+
         await prisma.step.create({
             data: {
-                batchId: args.newLotId,
+                batchId: newLotId,
                 stepType: args.processName,
                 actor: args.actor,
                 cid: args.ipfsHash,
-                ts: new Date(block.timestamp * 1000),
+                ts: blockTime,
                 txHash: txHash,
                 blockNum: blockNumber,
-                blockTime: new Date(block.timestamp * 1000),
+                blockTime: blockTime,
             }
         });
 
-        console.log("🔵 LotProcessed:", args.newLotId);
+        console.log("🔵 LotProcessed:", newLotId);
     }
 
     if (name === "LotTransferred") {
-        console.log("🟡 LotTransferred:", args.lotId);
+        console.log("🟡 LotTransferred:", normalizeIndexedString(args.lotId));
     }
 
     if (name === "TransferProposed") {
-        console.log("🟠 TransferProposed:", args.transferId);
+        console.log("🟠 TransferProposed:", normalizeIndexedString(args.transferId));
     }
 
     if (name === "TransferAccepted") {
-        console.log("🟢 TransferAccepted:", args.transferId);
+        console.log("🟢 TransferAccepted:", normalizeIndexedString(args.transferId));
     }
 
     if (name === "TransferCancelled") {
-        console.log("🔴 TransferCancelled:", args.transferId);
+        console.log("🔴 TransferCancelled:", normalizeIndexedString(args.transferId));
     }
 }
 
