@@ -7,17 +7,17 @@ import fs from "fs";
 
 const prisma = new PrismaClient();
 
-// fungsi bantu: normalisasi lotId / newLotId
+// Helper: ubah nilai indexed string ethers v6 jadi string biasa
 function normalizeIndexedString(value) {
-    // kalau sudah string biasa
     if (typeof value === "string") return value;
 
-    // ethers v6 Indexed: { hash: "0x...", _isIndexed: true }
-    if (value && typeof value === "object" && "hash" in value) {
-        return value.hash; // pakai hash-nya sebagai ID di DB
+    // ethers v6: Indexed<string> biasanya punya .hash
+    if (value && typeof value.hash === "string") return value.hash;
+
+    if (value && typeof value.toString === "function") {
+        return value.toString();
     }
 
-    // fallback
     return String(value);
 }
 
@@ -31,10 +31,9 @@ async function main() {
     const contract = new Contract(config.address, config.abi, provider);
 
     const latest = await provider.getBlockNumber();
-
     console.log("🚀 Indexer realtime berjalan");
     console.log("📌 Latest block di RPC:", latest);
-    console.log("❕ Skip catch-up, hanya dengarkan event baru dari sekarang.\n");
+    console.log("❕ Skip catch-up, hanya dengarkan event baru dari sekarang.");
 
     const events = [
         "LotCreated",
@@ -47,10 +46,9 @@ async function main() {
 
     for (const eventName of events) {
         contract.on(eventName, async (...args) => {
-            const evt = args[args.length - 1]; // event object
-
+            const evt = args[args.length - 1]; // objek event ethers
             try {
-                await handleEvent(eventName, evt, provider);
+                await handleEvent(eventName, evt);
             } catch (err) {
                 console.error(`@TODO Error handleEvent untuk ${eventName}:`, err);
             }
@@ -58,15 +56,14 @@ async function main() {
     }
 }
 
-async function handleEvent(name, evt, provider) {
+async function handleEvent(name, evt) {
     const args = evt.args;
 
-    // blockNumber dan txHash: coba ambil dari beberapa kemungkinan field
-    const blockNumber = evt.blockNumber ?? evt.log?.blockNumber;
-    const txHash = evt.transactionHash ?? evt.log?.transactionHash;
+    const blockNumber = evt.log.blockNumber;
+    const txHash = evt.log.transactionHash;
 
+    const provider = new JsonRpcProvider(process.env.RPC_URL);
     const block = await provider.getBlock(blockNumber);
-    const blockTime = new Date(block.timestamp * 1000);
 
     if (name === "LotCreated") {
         const lotId = normalizeIndexedString(args.lotId);
@@ -80,7 +77,7 @@ async function handleEvent(name, evt, provider) {
                 status: "CREATED",
                 createdTx: txHash,
                 createdBlock: blockNumber,
-                createdAt: blockTime,
+                createdAt: new Date(block.timestamp * 1000)
             },
             update: {}
         });
@@ -89,18 +86,35 @@ async function handleEvent(name, evt, provider) {
     }
 
     if (name === "LotProcessed") {
+        // ini yang tadi error: pastikan VARIABEL didefinisikan dulu
         const newLotId = normalizeIndexedString(args.newLotId);
 
+        // 1. pastikan batch untuk newLotId ada
+        await prisma.batch.upsert({
+            where: { id: newLotId },
+            create: {
+                id: newLotId,
+                owner: args.actor,
+                cid: args.ipfsHash,
+                status: "PROCESSED",
+                createdTx: txHash,
+                createdBlock: blockNumber,
+                createdAt: new Date(block.timestamp * 1000)
+            },
+            update: {}
+        });
+
+        // 2. simpan step-nya
         await prisma.step.create({
             data: {
                 batchId: newLotId,
                 stepType: args.processName,
                 actor: args.actor,
                 cid: args.ipfsHash,
-                ts: blockTime,
+                ts: new Date(block.timestamp * 1000),
                 txHash: txHash,
                 blockNum: blockNumber,
-                blockTime: blockTime,
+                blockTime: new Date(block.timestamp * 1000)
             }
         });
 
@@ -108,23 +122,27 @@ async function handleEvent(name, evt, provider) {
     }
 
     if (name === "LotTransferred") {
-        console.log("🟡 LotTransferred:", normalizeIndexedString(args.lotId));
+        const lotId = normalizeIndexedString(args.lotId);
+        console.log("🟡 LotTransferred:", lotId);
     }
 
     if (name === "TransferProposed") {
-        console.log("🟠 TransferProposed:", normalizeIndexedString(args.transferId));
+        const transferId = normalizeIndexedString(args.transferId);
+        console.log("🟠 TransferProposed:", transferId);
     }
 
     if (name === "TransferAccepted") {
-        console.log("🟢 TransferAccepted:", normalizeIndexedString(args.transferId));
+        const transferId = normalizeIndexedString(args.transferId);
+        console.log("🟢 TransferAccepted:", transferId);
     }
 
     if (name === "TransferCancelled") {
-        console.log("🔴 TransferCancelled:", normalizeIndexedString(args.transferId));
+        const transferId = normalizeIndexedString(args.transferId);
+        console.log("🔴 TransferCancelled:", transferId);
     }
 }
 
-main().catch(err => {
+main().catch((err) => {
     console.error("❌ Fatal error:", err);
     process.exit(1);
 });
